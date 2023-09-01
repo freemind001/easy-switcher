@@ -10,12 +10,13 @@ You may also build with [fpc](https://www.freepascal.org/)
 ### Ubuntu & Debian
 * Download the [latest deb](https://github.com/freemind001/easy-switcher/releases)
 * Install package
+
 	sudo dpkg -i easy-switcher.deb
-
 * Configure
-	sudo easy-switcher -c
 
+	sudo easy-switcher -c
 * Run Easy Switcher daemon
+
 	sudo systemctl start easy-switcher
 
 ### Other Linux & your own builds
