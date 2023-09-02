@@ -3,7 +3,11 @@ Easy Switcher is a keyboard layout switcher and input corrector for Linux.
 It runs as a daemon on your system, is independent from your desktop environment and windowing system, works with the keyboard directly via kernel input, so it is reliable and smooth.   
 
 ## How does it work?
-The program catches your keystrokes, remembers them, and when you press a special key (Pause/Break by default), it erases what you have written, changes the layout, and writes the correct input back.
+Easy Switcher catches your keystrokes, remembers them, and when you press a special key (Pause/Break by default), it erases what you have written, changes the layout, and writes the correct input back.
+
+## Usage
+Install, configure & run the daemon.
+Press Pause/Break to convert the last word you have entered. Press Shift+Pause/Break to convert the last entered phrase.
 
 ## How to build
 Easy Switcher is written in Pascal.  
@@ -15,25 +19,33 @@ You may also build with [fpc](https://www.freepascal.org/).
 * Download the [latest deb](https://github.com/freemind001/easy-switcher/releases).
 * Install the package: `sudo dpkg -i <path to easy-switcher.deb>`.
 * Configure: `sudo easy-switcher -c`.
-* Run Easy Switcher daemon: `sudo systemctl start easy-switcher`.
+* Install & run Easy Switcher daemon:
+  ```
+  sudo easy-switcher -i
+  sudo systemctl enable easy-switcher
+  sudo systemctl start easy-switcher
+  ```
+  
 ### Other Linux & your own builds
 * Build Easy Switcher or download the [latest binary](https://github.com/freemind001/easy-switcher/releases).
 * Copy easy-switcher to /usr/bin/ and allow execute the file as program.
-* Install Easy Switcher as daemon:  
-If your OS supports systemd: `sudo easy-switcher -i`.  
-If your OS doesn't support systemd, please refer your OS documentation on how to install daemons. You need to use -o or --old-style key to run Easy Switcher as an "old-style" (true) daemon.
-* Configure: `sudo easy-switcher -c`  
-* Run Easy Switcher daemon:  
-If your OS supports systemd: `sudo systemctl start easy-switcher`.  
-If your OS doesn't support systemd, please refer your OS documentation on how to run daemons.  
+* Configure: `sudo easy-switcher -c` 
+* Install & run Easy Switcher as daemon:  
+If your OS supports systemd:
+  ```
+  sudo easy-switcher -i
+  sudo systemctl enable easy-switcher
+  sudo systemctl start easy-switcher
+  ```  
+If your OS doesn't support systemd, please refer your OS documentation on how to install and run daemons. You need to use -o or --old-style switch to run Easy Switcher as an "old-style" (true) daemon.
 
 ## Configuring
-For manual configuration please edit /etc/easy-switcher/default.conf after installation.  
-Easy Switcher has built-in configuration tool. Please run it in terminal with -c or --configure key to configure automatically.  
+Easy Switcher has a built-in configuration tool. For automatic configuration, run it in a terminal with the -c or --configure switch.    
+Additional tuning is available with manual configuration, please edit /etc/easy-switcher/default.conf.  
 
 ## Troubleshooting
 Run-time errors are written to syslog.  
-For detailed info run Easy Switcher in terminal in a debug mode with -d or --debug key. 
+For detailed info run Easy Switcher in terminal in a debug mode with -d or --debug switch. 
 
 ## Known bugs & issues
 * Doesn't work correctly together with key remappers such as keyd  
