@@ -11,6 +11,11 @@ If you have entered text in the wrong layout, press Pause/Break to convert the l
 
 ## How to build
 Easy Switcher is written in Pascal. It can be built with [fpc](https://www.freepascal.org/) or [Lazarus](https://www.lazarus-ide.org/).
+To build with fpc:
+* Install fpc version 3.2.2 or later
+* Clone this repository.
+* Go to sources folder `cd <path to easy-switcher.lpr folder>`.
+* Build Easy Switcher `fpc easy-switcher.lpr`.
 
 ## Installation
 ### Ubuntu & Debian
@@ -26,7 +31,7 @@ Easy Switcher is written in Pascal. It can be built with [fpc](https://www.freep
   
 ### Other Linux & your own builds
 * Build Easy Switcher or download the [latest binary](https://github.com/freemind001/easy-switcher/releases).
-* Copy easy-switcher to /usr/bin/ and allow execute the file as program.
+* Copy easy-switcher binary to /usr/bin/ and allow execute the file as program.
 * Configure: `sudo easy-switcher -c` 
 * Install & run Easy Switcher as daemon:  
   If your OS supports systemd:
