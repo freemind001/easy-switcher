@@ -7,7 +7,7 @@ Easy Switcher writes your keystrokes to internal buffer, and when you press a sp
 
 ## Usage
 Install, configure & run the daemon.   
-Press Pause/Break to convert the last word you have entered. Press Shift+Pause/Break to convert the last entered phrase.
+Press Pause/Break to convert the last word you typed. Press Shift+Pause/Break to convert the whole phrase. 
 
 ## How to build
 Easy Switcher is written in Pascal. It can be built with [fpc](https://www.freepascal.org/) or [Lazarus](https://www.lazarus-ide.org/).
