@@ -29,11 +29,11 @@ If your OS doesn't support systemd, please refer your OS documentation on how to
 
 ## Configuring
 For manual configuration please edit /etc/easy-switcher/default.conf after installation.  
-Easy Switcher has built-in configuration tool. Please use -c or --configure key to configure Easy Switcher automatically.  
+Easy Switcher has built-in configuration tool. Please run it in terminal with -c or --configure key to configure automatically.  
 
 ## Troubleshooting
 Run-time errors are written to syslog.  
-For detailed info run Easy Switcher in terminal in a debug mode using -d or --debug key. 
+For detailed info run Easy Switcher in terminal in a debug mode with -d or --debug key. 
 
 ## Known bugs & issues
 * Doesn't work correctly together with key remappers such as keyd  
