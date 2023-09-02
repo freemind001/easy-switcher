@@ -6,7 +6,7 @@ It runs as a daemon on your system, is independent from your desktop environment
 Easy Switcher catches your keystrokes, remembers them, and when you press a special key (Pause/Break by default), it erases what you have written, changes the layout, and writes the correct input back.
 
 ## Usage
-Install, configure & run the daemon.
+Install, configure & run the daemon.   
 Press Pause/Break to convert the last word you have entered. Press Shift+Pause/Break to convert the last entered phrase.
 
 ## How to build
@@ -36,7 +36,7 @@ If your OS supports systemd:
   sudo easy-switcher -i
   sudo systemctl enable easy-switcher
   sudo systemctl start easy-switcher
-  ```  
+  ```
 If your OS doesn't support systemd, please refer your OS documentation on how to install and run daemons. You need to use -o or --old-style switch to run Easy Switcher as an "old-style" (true) daemon.
 
 ## Configuring
