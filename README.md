@@ -11,8 +11,7 @@ Press Pause/Break to convert the last word you have entered. Press Shift+Pause/B
 
 ## How to build
 Easy Switcher is written in Pascal.  
-The simplest way to build is to install [Lazarus](https://www.lazarus-ide.org/), clone this repository, open the project (easy-switcher.lpi) and build it.  
-You may also build with [fpc](https://www.freepascal.org/).
+It can be built with [fpc](https://www.freepascal.org/) or [Lazarus](https://www.lazarus-ide.org/).
 
 ## Installation
 ### Ubuntu & Debian
