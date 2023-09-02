@@ -39,8 +39,8 @@ If your OS supports systemd:
 If your OS doesn't support systemd, please refer your OS documentation on how to run daemons
 
 ## Configuring
-For manual configuration please edit /etc/easy-switcher/default.conf after installation
+For manual configuration please edit /etc/easy-switcher/default.conf after installation  
 Easy Switcher has built-in configuration tool. Please use -c or --configure key to configure Easy Switcher automatically.
 
 ## Known bugs & issues
-* Doesn't work correctly togethe with key remappers such as keyd
+* Doesn't work correctly together with key remappers such as keyd
