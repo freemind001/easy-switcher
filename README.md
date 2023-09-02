@@ -21,14 +21,13 @@ You may also build with [fpc](https://www.freepascal.org/)
 
 ### Other Linux & your own builds
 * Build Easy Switcher or download the [latest binary](https://github.com/freemind001/easy-switcher/releases)
-* Copy copy easy-switcher to /usr/bin/ and allow execute file as program
-* install Easy Switcher as daemon
+* Copy copy easy-switcher to /usr/bin/ and allow execute the file as program
+* install Easy Switcher as daemon  
 If your OS supports systemd:
 
 	`sudo easy-switcher -i`
 
-If your OS doesn't support systemd, please refer your OS documentation on how to install daemons.
-You need to use -o or --old-style key to run Easy Switcher as an "old-style" (true) daemon
+If your OS doesn't support systemd, please refer your OS documentation on how to install daemons. You need to use -o or --old-style key to run Easy Switcher as an "old-style" (true) daemon
 * Configure
 
 	`sudo easy-switcher -c`
