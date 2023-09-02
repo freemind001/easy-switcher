@@ -31,10 +31,11 @@ If your OS doesn't support systemd, please refer your OS documentation on how to
 * Configure
 
 	`sudo easy-switcher -c`
-* Run Easy Switcher daemon
+* Run Easy Switcher daemon  
 If your OS supports systemd:
 
 	`sudo systemctl start easy-switcher`
+
 If your OS doesn't support systemd, please refer your OS documentation on how to run daemons
 
 ## Configuring
