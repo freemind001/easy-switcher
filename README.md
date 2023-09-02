@@ -38,7 +38,7 @@ If your OS supports systemd:
   sudo systemctl start easy-switcher
   ```
 If your OS doesn't support systemd, please refer your OS documentation on how to install and run daemons. You need to use -o or --old-style switch to run Easy Switcher as an "old-style" (true) daemon.
-
+  
 ## Configuring
 Easy Switcher has a built-in configuration tool. For automatic configuration, run it in a terminal with the -c or --configure switch.    
 Additional tuning is available with manual configuration, please edit /etc/easy-switcher/default.conf.  
