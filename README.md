@@ -14,7 +14,6 @@ You may also build with [fpc](https://www.freepascal.org/).
 ### Ubuntu & Debian
 * Download the [latest deb](https://github.com/freemind001/easy-switcher/releases).
 * Install the package:
-
 	`sudo dpkg -i <path to easy-switcher.deb>`
 * Configure:
 
