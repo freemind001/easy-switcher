@@ -22,18 +22,13 @@ To build with fpc:
 * Download the [latest deb](https://github.com/freemind001/easy-switcher/releases).
 * Install the package: `sudo dpkg -i <path to easy-switcher.deb>`.
 * Configure: `sudo easy-switcher -c`.
-* Install & run Easy Switcher daemon:
-  ```
-  sudo easy-switcher -i
-  sudo systemctl enable easy-switcher
-  sudo systemctl start easy-switcher
-  ```
+* Start Easy Switcher daemon: `sudo systemctl start easy-switcher`  
   
 ### Other Linux & your own builds
 * Build Easy Switcher or download the [latest binary](https://github.com/freemind001/easy-switcher/releases).
 * Copy easy-switcher binary to /usr/bin/ and allow execute the file as program.
 * Configure: `sudo easy-switcher -c` 
-* Install & run Easy Switcher as daemon:  
+* Install & start Easy Switcher as daemon:  
   If your OS supports systemd:
   ```
   sudo easy-switcher -i
