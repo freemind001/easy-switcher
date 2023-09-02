@@ -13,35 +13,23 @@ You may also build with [fpc](https://www.freepascal.org/).
 ## Installation
 ### Ubuntu & Debian
 * Download the [latest deb](https://github.com/freemind001/easy-switcher/releases).
-* Install the package:
-	`sudo dpkg -i <path to easy-switcher.deb>`
-* Configure:
-
-	`sudo easy-switcher -c`
-* Run Easy Switcher daemon:
-
-	`sudo systemctl start easy-switcher`
-
+* Install the package: `sudo dpkg -i <path to easy-switcher.deb>`.
+* Configure: `sudo easy-switcher -c`.
+* Run Easy Switcher daemon: `sudo systemctl start easy-switcher`.
 ### Other Linux & your own builds
 * Build Easy Switcher or download the [latest binary](https://github.com/freemind001/easy-switcher/releases).
 * Copy easy-switcher to /usr/bin/ and allow execute the file as program.
-* Install Easy Switcher as daemon.  
-If your OS supports systemd:
-
-	`sudo easy-switcher -i`
+* Install Easy Switcher as daemon:  
+If your OS supports systemd: `sudo easy-switcher -i`.  
 If your OS doesn't support systemd, please refer your OS documentation on how to install daemons. You need to use -o or --old-style key to run Easy Switcher as an "old-style" (true) daemon.
-* Configure:
-
-	`sudo easy-switcher -c`
-* Run Easy Switcher daemon.  
-If your OS supports systemd:
-
-	`sudo systemctl start easy-switcher`
-If your OS doesn't support systemd, please refer your OS documentation on how to run daemons.
+* Configure: `sudo easy-switcher -c`  
+* Run Easy Switcher daemon:  
+If your OS supports systemd: `sudo systemctl start easy-switcher`.  
+If your OS doesn't support systemd, please refer your OS documentation on how to run daemons.  
 
 ## Configuring
 For manual configuration please edit /etc/easy-switcher/default.conf after installation.  
-Easy Switcher has built-in configuration tool. Please use -c or --configure key to configure Easy Switcher automatically.
+Easy Switcher has built-in configuration tool. Please use -c or --configure key to configure Easy Switcher automatically.  
 
 ## Known bugs & issues
-* Doesn't work correctly together with key remappers such as keyd
+* Doesn't work correctly together with key remappers such as keyd  
