@@ -46,4 +46,7 @@ Run-time errors are written to syslog.
 For detailed info run Easy Switcher in terminal in a debug mode with -d or --debug switch. 
 
 ## Known bugs & issues
-* Doesn't work correctly together with key remappers such as keyd.  
+* Doesn't work correctly together with key remappers such as keyd.
+
+## Tags
+punto switcher for Ubuntu, xneur analog, gxneur alternative
