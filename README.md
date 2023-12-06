@@ -47,6 +47,7 @@ For detailed info run Easy Switcher in terminal in a debug mode with -d or --deb
 
 ## Known bugs & issues
 * Doesn't work correctly together with key remappers such as keyd.
+* Works better if you use single-key shortcut for layout switching. Please consider making additional single-key shortcut for layout switching in your system settings for better perfomance. 
 
 ## Tags
 punto switcher for Ubuntu, xneur analog, gxneur alternative
