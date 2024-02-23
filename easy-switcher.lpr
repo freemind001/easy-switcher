@@ -647,7 +647,6 @@ var
       i: integer = 0;
       k: integer = 0;
       Last: integer = 0;
-      //ModificatorDown: boolean = False;
     begin
       //copy everything to iBuf and clear KeyBuf
       for i := 0 to Length(KeyBuf) - 1 do
@@ -744,36 +743,6 @@ var
         iBuf[i] := oBuf[i];
       end;
       SetLength(oBuf, 0);
-
-      //process ctrldown-ctrlup
-      {k := 0;
-      for i := 0 to Length(iBuf) - 1 do
-      begin
-        if (iBuf[i].code in Modificators) then
-        begin
-          if iBuf[i].Value = 1 then ModificatorDown := True
-          else
-            ModificatorDown := False;
-        end
-        else
-        begin
-          if not ModificatorDown then
-          begin
-            SetLength(oBuf, k + 1);
-            oBuf[k] := iBuf[i];
-            k += 1;
-          end;
-        end;
-      end;
-
-      SetLength(iBuf, 0);
-      for i := 0 to Length(oBuf) - 1 do
-      begin
-        SetLength(iBuf, i + 1);
-        iBuf[i] := oBuf[i];
-      end;
-      SetLength(oBuf, 0);   }
-
 
       //get rid of BS if any
       k := 0;
@@ -1083,7 +1052,7 @@ var
             KeyAction[KeyIE.Value]]), True);
           sleep(50);
           if ((KeyIE.code in Letters) or (KeyIE.code in Shifts) or
-            (KeyIE.code = KEY_RPL)) then   //(KeyIE.code in Modificators) or
+            (KeyIE.code = KEY_RPL)) then
           begin
             i := Length(KeyBuf);
             SetLength(KeyBuf, i + 1);
