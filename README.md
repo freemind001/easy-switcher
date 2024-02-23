@@ -11,12 +11,14 @@ If you have entered text in the wrong layout, press Pause/Break to convert the l
 
 ## How to build
 Easy Switcher is written in Pascal. It can be built with [fpc](https://www.freepascal.org/) or [Lazarus](https://www.lazarus-ide.org/).  
+
 To build with fpc:
 * Install fpc version 3.2.2 or later.
 * Clone this repository.
 * Go to the sources folder `cd <path to easy-switcher.lpr folder>`.
-* Build Easy Switcher `fpc easy-switcher.lpr`.
-To build with Lazarus:   
+* Build Easy Switcher `fpc easy-switcher.lpr`.   
+
+To build with Lazarus:
 * Install the latest version of Lazarus.
 * Download the sources.
 * Open easy-switcher.lpr in Lazarus and click 'Run'->'Complile'. 
