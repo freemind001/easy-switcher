@@ -1,6 +1,7 @@
 program easyswitcher;
 
 {$mode objfpc}
+{$h+}
 
 uses
   cThreads,
@@ -20,14 +21,14 @@ type
     Value: cint32;
   end;
 
-  input_id = record   //c-style struct input_id
+  input_id = record      //c-style struct input_id
     bustype: cuint16;
     vendor: cuint16;
     product: cuint16;
     version: cuint16;
   end;
 
-  uinput_setup = record //c-style struct uinput_setup
+  uinput_setup = record  //c-style struct uinput_setup
     id: input_id;
     Name: array[0..79] of char;
     ff_effects_max: cuint32;
@@ -46,7 +47,7 @@ type
   TQueueSelector = (TCIFLUSH, TCOFLUSH, TCIOFLUSH);
 
 const
-  EASY_SWITCHER_VERSION = '0.2';
+  EASY_SWITCHER_VERSION = '0.3';
 
   SYSTEMD_UNIT_FILE = '/lib/systemd/system/easy-switcher.service';
   CONFIG_FILE = '/etc/easy-switcher/default.conf';
@@ -76,7 +77,7 @@ const
     36, 37, 38, 39, 40, 41, 43, 44, 45, 46, 47, 48, 49, 50, 51, 52,
     53, 55, 57, 71, 72, 73, 74, 75, 76, 77, 78, 79, 80, 81, 82, 83, 96, 98];
   Shifts = [42, 54];
-  BufKillers = [15, 102, 103, 104, 105, 106, 107, 108, 109, 110];
+  BufKillers = [15, 29, 56, 97, 100, 102, 103, 104, 105, 106, 107, 108, 109, 110];
 
   KEY_BACKSPACE: word = 14;    //Backspace
   KEY_SPACE: word = 57;        //Space
@@ -140,7 +141,7 @@ var
 
   StopAndExit: boolean = False;
 
-  procedure Log(EventType: TEventType; const aMessage: string; StdOutputOnly: boolean);
+  procedure Log(EventType: TEventType; aMessage: string; StdOutputOnly: boolean);
   begin
     if DaemonMode then
     begin
@@ -257,7 +258,6 @@ var
     KeyboardFD: longint = -1;
     ioRes: int64 = -1;
     KeyIE: input_event;
-
   begin
     DaemonMode := False;
     KeyboardList := Default(TKeyboardList);
@@ -605,14 +605,28 @@ var
     begin
       Last := Length(KeyBuf) - 1;
 
-      if Length(KeyBuf) < 3 then Exit(KeepBuffer);
+      if Length(KeyBuf) < 2 then Exit(KeepBuffer);
 
+      if Length(KeyBuf) < 4 then
+        if (KeyBuf[Last].code = Key_RPL) and (KeyBuf[Last].Value = 0) and
+          (KeyBuf[Last - 1].code = Key_RPL) and (KeyBuf[Last - 1].Value = 1) then
+          Exit(ReplaceWord)
+        else
+          Exit(KeepBuffer);
+
+      if (KeyBuf[Last].code = Key_RPL) and (KeyBuf[Last].Value = 0) and
+        (KeyBuf[Last - 1].code in Shifts) and (KeyBuf[Last - 1].Value = 0) and
+        (KeyBuf[Last - 2].code = Key_RPL) and (KeyBuf[Last - 2].Value = 1) and
+        (KeyBuf[Last - 3].code in Shifts) and (KeyBuf[Last - 3].Value = 1) then
+        Exit(ReplaceAll)  //shiftd rpld shiftu rplu
+      else
       if (KeyBuf[Last].code = Key_RPL) and (KeyBuf[Last].Value = 0) and
         (KeyBuf[Last - 1].code = Key_RPL) and (KeyBuf[Last - 1].Value = 1) then
         if (KeyBuf[Last - 2].code in Shifts) and (KeyBuf[Last - 2].Value = 1) then
-          Exit(ReplaceAll)
+          Exit(ReplaceAll)  //shiftd rpld rplu
         else
-          Exit(ReplaceWord);
+          Exit(ReplaceWord);  //rpld rplu
+
       Result := KeepBuffer;
     end;
 
@@ -628,68 +642,171 @@ var
 
     procedure PrepareBuffer();
     var
-      TempBuf: array of input_event = nil;
+      iBuf: array of input_event = nil;
+      oBuf: array of input_event = nil;
       i: integer = 0;
       k: integer = 0;
       Last: integer = 0;
+      //ModificatorDown: boolean = False;
     begin
-      Last := Length(KeyBuf) - 1;
+      //copy everything to iBuf and clear KeyBuf
+      for i := 0 to Length(KeyBuf) - 1 do
+      begin
+        SetLength(iBuf, i + 1);
+        iBuf[i] := KeyBuf[i];
+      end;
+      SetLength(KeyBuf, 0);
 
-      //get rid of RPL
-      if (KeyBuf[Last].code = Key_RPL) and (KeyBuf[Last].Value = 0) and
-        (KeyBuf[Last - 1].code = Key_RPL) and (KeyBuf[Last - 1].Value = 1) then
-        if (KeyBuf[Last - 2].code in Shifts) and (KeyBuf[Last - 2].Value = 1) then
+      //get rid of replace keys
+      Last := Length(iBuf) - 1;
+      if (iBuf[Last].code = Key_RPL) and (iBuf[Last].Value = 0) and
+        (iBuf[Last - 1].code in Shifts) and (iBuf[Last - 1].Value = 0) and
+        (iBuf[Last - 2].code = Key_RPL) and (iBuf[Last - 2].Value = 1) and
+        (iBuf[Last - 3].code in Shifts) and (iBuf[Last - 3].Value = 1) then
+        Last := Last - 4
+      else if (iBuf[Last].code = Key_RPL) and (iBuf[Last].Value = 0) and
+        (iBuf[Last - 1].code = Key_RPL) and (iBuf[Last - 1].Value = 1) then
+        if (iBuf[Last - 2].code in Shifts) and (iBuf[Last - 2].Value = 1) then
           Last := Last - 3
         else
           Last := Last - 2;
-
       for i := 0 to Last do
       begin
-        //get rid of BS, if any
-        if (KeyBuf[i].code = KEY_BACKSPACE) then
-        begin
-          if (k = 0) then
-            continue
-          else
-          begin
-            k := Length(TempBuf) - 1;
-            if TempBuf[k].code in Shifts then
-              TempBuf[k - 1] := TempBuf[k];
-            SetLength(TempBuf, k);
-            continue;
-          end;
-        end;
-
-        SetLength(TempBuf, k + 1);
-        TempBuf[k] := KeyBuf[i];
-        k += 1;
+        SetLength(oBuf, i + 1);
+        oBuf[i] := iBuf[i];
       end;
 
-      SetLength(KeyBuf, 0);
-      k := 0;
-
-      for i := 0 to Length(TempBuf) - 1 do
+      SetLength(iBuf, 0);
+      for i := 0 to Length(oBuf) - 1 do
       begin
-        //convert repeated keys to keydowns, works bad, probably kernel bug
-        if TempBuf[i].Value = 2 then
-        begin
-          SetLength(KeyBuf, k + 1);
-          KeyBuf[k] := TempBuf[i];
-          KeyBuf[k].Value := 0;
-          k += 1;
+        SetLength(iBuf, i + 1);
+        iBuf[i] := oBuf[i];
+      end;
+      SetLength(oBuf, 0);
 
-          SetLength(KeyBuf, k + 1);
-          KeyBuf[k] := TempBuf[i];
-          KeyBuf[k].Value := 1;
-          k += 1;
+      //cut of last line only
+      k := 0;
+      for i := 0 to Length(iBuf) - 1 do
+      begin
+        if (iBuf[i].code = KEY_ENTER) and (iBuf[i].Value = 0) and
+          (i <> Length(iBuf) - 1) then
+        begin
+          k := 0;
+          SetLength(oBuf, k);
         end
         else
         begin
-          SetLength(KeyBuf, k + 1);
-          KeyBuf[k] := TempBuf[i];
+          SetLength(oBuf, k + 1);
+          oBuf[k] := iBuf[i];
           k += 1;
         end;
       end;
+
+      SetLength(iBuf, 0);
+      for i := 0 to Length(oBuf) - 1 do
+      begin
+        SetLength(iBuf, i + 1);
+        iBuf[i] := oBuf[i];
+      end;
+      SetLength(oBuf, 0);
+
+
+      //get rid of shiftdown-shiftup
+      k := 0;
+      for i := 0 to Length(iBuf) - 1 do
+      begin
+        if (iBuf[i].code in Shifts) and (k > 0) then
+        begin
+          if (oBuf[k - 1].code in Shifts) then
+          begin
+            SetLength(oBuf, k - 1);
+            k -= 1;
+          end
+          else
+          begin
+            SetLength(oBuf, k + 1);
+            oBuf[k] := iBuf[i];
+            k += 1;
+          end;
+        end
+        else
+        begin
+          SetLength(oBuf, k + 1);
+          oBuf[k] := iBuf[i];
+          k += 1;
+        end;
+      end;
+
+      SetLength(iBuf, 0);
+      for i := 0 to Length(oBuf) - 1 do
+      begin
+        SetLength(iBuf, i + 1);
+        iBuf[i] := oBuf[i];
+      end;
+      SetLength(oBuf, 0);
+
+      //process ctrldown-ctrlup
+      {k := 0;
+      for i := 0 to Length(iBuf) - 1 do
+      begin
+        if (iBuf[i].code in Modificators) then
+        begin
+          if iBuf[i].Value = 1 then ModificatorDown := True
+          else
+            ModificatorDown := False;
+        end
+        else
+        begin
+          if not ModificatorDown then
+          begin
+            SetLength(oBuf, k + 1);
+            oBuf[k] := iBuf[i];
+            k += 1;
+          end;
+        end;
+      end;
+
+      SetLength(iBuf, 0);
+      for i := 0 to Length(oBuf) - 1 do
+      begin
+        SetLength(iBuf, i + 1);
+        iBuf[i] := oBuf[i];
+      end;
+      SetLength(oBuf, 0);   }
+
+
+      //get rid of BS if any
+      k := 0;
+      for i := 0 to Length(iBuf) - 1 do
+      begin
+        if (iBuf[i].code = KEY_BACKSPACE) then
+        begin
+          if k = 0 then
+            continue    //leading
+          else
+          begin
+            k -= 1;
+            if oBuf[k].code in Shifts then
+              oBuf[k - 1] := oBuf[k];
+            SetLength(oBuf, k);    //inline
+          end;
+        end
+        else
+        begin
+          SetLength(oBuf, k + 1);
+          oBuf[k] := iBuf[i];
+          k += 1;
+        end;
+      end;
+
+      //fill in prepared buffer back
+      for i := 0 to Length(oBuf) - 1 do
+      begin
+        SetLength(KeyBuf, i + 1);
+        KeyBuf[i] := oBuf[i];
+      end;
+
+      sleep(10);
     end;
 
     procedure Convert(SingleWord: boolean);
@@ -820,7 +937,7 @@ var
       Log(etInfo, Format('Starting Easy Switcher v%s in debug mode...',
         [EASY_SWITCHER_VERSION]), False);
 
-    //Init values
+    //Init variables
     NewAct := Default(SigactionRec);
     OldAct := Default(SigactionRec);
     KeyIE := Default(input_event);
@@ -960,13 +1077,13 @@ var
           NeedClearKeyBuf := False;
           Log(etInfo, 'buffer cleared', True);
         end;
-        if ((KeyIE.ie_type = EV_KEY) and (KeyIE.Value in [0, 1, 2])) then
+        if ((KeyIE.ie_type = EV_KEY) and (KeyIE.Value in [0, 1])) then //, 2
         begin
           Log(etInfo, Format('input %s %s', [KeyName[KeyIE.code],
             KeyAction[KeyIE.Value]]), True);
           sleep(50);
           if ((KeyIE.code in Letters) or (KeyIE.code in Shifts) or
-            (KeyIE.code = KEY_RPL)) then
+            (KeyIE.code = KEY_RPL)) then   //(KeyIE.code in Modificators) or
           begin
             i := Length(KeyBuf);
             SetLength(KeyBuf, i + 1);
