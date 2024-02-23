@@ -16,7 +16,7 @@ To build with fpc:
 * Clone this repository.
 * Go to the sources folder `cd <path to easy-switcher.lpr folder>`.
 * Build Easy Switcher `fpc easy-switcher.lpr`.
-To build with Lazarus:
+To build with Lazarus:   
 * Install the latest version of Lazarus.
 * Download the sources.
 * Open easy-switcher.lpr in Lazarus and click 'Run'->'Complile'. 
