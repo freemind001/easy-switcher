@@ -47,6 +47,9 @@ To build with Lazarus:
 Easy Switcher has a built-in configuration tool. For automatic configuration, run it in the terminal with the -c or --configure switch.    
 Additional tuning is available with manual configuration, please edit /etc/easy-switcher/default.conf.  
 
+## Auto-mode (this fork)
+This fork adds an optional mode that corrects wrong-layout words automatically as you type, without pressing Pause/Break — see [docs/AUTO-MODE.md](docs/AUTO-MODE.md) for how it works, requirements and configuration.
+
 ## Troubleshooting
 Run-time errors are written to syslog.  
 For detailed info run Easy Switcher in terminal in a debug mode with -d or --debug switch. 

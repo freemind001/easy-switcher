@@ -3,6 +3,7 @@ program easyswitcher;
 {$mode objfpc}
 {$h+}
 {$notes off}
+{$codepage utf8}
 
 uses
   cThreads,
@@ -12,7 +13,12 @@ uses
   Classes,
   IniFiles,
   EventLog,
-  Errors;
+  Errors,
+  ctypes,
+  dynlibs,
+  process,
+  DateUtils,
+  Generics.Collections;
 
 type
   // input.h struct input_event
@@ -45,6 +51,14 @@ type
   TKeyBuf = array of input_event;
   TEmitBuf = array [1..2] of input_event;
   TBufferAction = (KeepBuffer, ReplaceAll, ReplaceWord);
+
+  // --- auto-correct addition: Hunspell C API, loaded dynamically at runtime ---
+  THunspellCreate = function(affpath, dpath: PChar): Pointer; cdecl;
+  THunspellDestroy = procedure(handle: Pointer); cdecl;
+  THunspellSpell = function(handle: Pointer; word: PChar): cint; cdecl;
+  TCharTable = array [0..248] of UTF8String;
+  TBigramCounts = specialize TDictionary<UTF8String, Int64>;
+  TCharArray = array of UTF8String;
 
 const
   EASY_SWITCHER_VERSION = '0.4';
@@ -112,6 +126,26 @@ const
     'BLUETOOTH', 'WLAN', 'UWB', 'UNKNOWN', 'VIDEO_NEXT', 'VIDEO_PREV', 'BRIGHTNESS_CYCLE',
     'BRIGHTNESS_AUTO', 'DISPLAY_OFF', 'WWAN', 'RFKILL', 'MICMUTE');
 
+  // --- auto-correct addition ---
+  HUNSPELL_CANDIDATES: array [0..3] of string = (
+    'libhunspell-1.7.so.0',
+    'libhunspell-1.7.so',
+    'libhunspell.so.0',
+    'libhunspell.so'
+    );
+  DEFAULT_EN_AFF = '/usr/share/hunspell/en_US.aff';
+  DEFAULT_EN_DIC = '/usr/share/hunspell/en_US.dic';
+  DEFAULT_RU_AFF = '/usr/share/hunspell/ru_RU.aff';
+  DEFAULT_RU_DIC = '/usr/share/hunspell/ru_RU.dic';
+  DEFAULT_AUTOTOGGLE_KEY = 70;    // SCROLLLOCK
+  DEFAULT_MIN_WORD_LENGTH = 4;
+  DEFAULT_ACTIVE_WINDOW_TOOL = 'kdotool';
+  DEFAULT_ACTIVE_WINDOW_TIMEOUT_MS = 200;
+  DEFAULT_ACTIVE_WINDOW_CACHE_MS = 400;
+  EN_BIGRAM_ALPHABET = 27 * 27;
+  RU_BIGRAM_ALPHABET = 34 * 34;
+  DEFAULT_BIGRAM_THRESHOLD = 1.2;
+
 var
   DaemonMode: boolean = True;
   AppEventLog: TEventLog = nil;
@@ -128,6 +162,42 @@ var
   BufferAction: TBufferAction = KeepBuffer;
 
   StopAndExit: boolean = False;
+
+  // --- auto-correct addition ---
+  AutoModeStart: boolean = False;      // from config: start with auto-mode on?
+  AutoModeActive: boolean = False;     // live toggle state
+  Key_AUTOTOGGLE: word = DEFAULT_AUTOTOGGLE_KEY;
+  MinWordLength: integer = DEFAULT_MIN_WORD_LENGTH;
+  DictEnAff, DictEnDic, DictRuAff, DictRuDic: string;
+
+  HunspellLib: TLibHandle = NilHandle;
+  Hunspell_create: THunspellCreate = nil;
+  Hunspell_destroy: THunspellDestroy = nil;
+  Hunspell_spell: THunspellSpell = nil;
+  EnDictHandle: Pointer = nil;
+  RuDictHandle: Pointer = nil;
+  HunspellReady: boolean = False;
+
+  EnChar, EnCharShift, RuChar, RuCharShift: TCharTable;
+  CurrentIsRu: boolean = False;   // best-guess active layout, tracked live
+  LS0Down: boolean = False;
+  LS1Down: boolean = False;
+
+  ExcludeApps: string = '';               // comma-separated substrings, empty = feature off
+  ActiveWindowTool: string = DEFAULT_ACTIVE_WINDOW_TOOL;
+  ActiveWindowTimeoutMs: integer = DEFAULT_ACTIVE_WINDOW_TIMEOUT_MS;
+  ActiveWindowCacheMs: integer = DEFAULT_ACTIVE_WINDOW_CACHE_MS;
+  ActiveWindowUser: string = '';          // Linux username whose session bus to query
+  ActiveWindowUid: string = '';           // resolved once at startup from ActiveWindowUser
+  LastActiveWindowCheck: TDateTime = 0;
+  LastActiveWindowClass: string = '';
+
+  EnBigrams: TBigramCounts = nil;
+  RuBigrams: TBigramCounts = nil;
+  EnBigramTotal: Int64 = 0;
+  RuBigramTotal: Int64 = 0;
+  BigramReady: boolean = False;
+  BigramThreshold: double = DEFAULT_BIGRAM_THRESHOLD;
 
   procedure Log(EventType: TEventType; aMessage: string; StdOutputOnly: boolean);
   begin
@@ -147,6 +217,536 @@ var
       end;
     end;
   end;
+
+  // ============================================================
+  // --- auto-correct addition: everything below this block, down
+  //     to (and including) the "end of auto-correct addition" marker,
+  //     is new compared to upstream easy-switcher.
+  // ============================================================
+
+  // Physical-key mapping between standard US QWERTY and standard RU
+  // (Windows) ЙЦУКЕН layout. Covers letters + the punctuation keys that
+  // double as Cyrillic letters ([, ], ;, ', `). Digit row is left
+  // identical between tables on purpose - digits rarely decide word
+  // validity, and getting the RU shifted-symbol row (!"№;%:?*()) exactly
+  // right is not worth the risk of a typo in a table nobody can easily
+  // proof-read. BACKSLASH is left as itself for the same reason: its
+  // Cyrillic mapping varies by layout variant. If this matters to you,
+  // it's a one-line fix per key right here.
+  procedure InitCharTables();
+    procedure SetKey(code: word; en, enShift, ru, ruShift: UTF8String);
+    begin
+      EnChar[code] := en;       EnCharShift[code] := enShift;
+      RuChar[code] := ru;       RuCharShift[code] := ruShift;
+    end;
+  var
+    i: integer;
+  begin
+    for i := 0 to 248 do
+    begin
+      EnChar[i] := '';  EnCharShift[i] := '';
+      RuChar[i] := '';  RuCharShift[i] := '';
+    end;
+
+    // digit row - identical in both tables, shift-row symbols kept as EN
+    // ('cause see comment above)
+    SetKey(2, '1', '!', '1', '!');   SetKey(3, '2', '@', '2', '@');
+    SetKey(4, '3', '#', '3', '#');   SetKey(5, '4', '$', '4', '$');
+    SetKey(6, '5', '%', '5', '%');   SetKey(7, '6', '^', '6', '^');
+    SetKey(8, '7', '&', '7', '&');   SetKey(9, '8', '*', '8', '*');
+    SetKey(10, '9', '(', '9', '(');  SetKey(11, '0', ')', '0', ')');
+    SetKey(12, '-', '_', '-', '_');  SetKey(13, '=', '+', '=', '+');
+
+    // QWERTY row
+    SetKey(16, 'q', 'Q', 'й', 'Й');  SetKey(17, 'w', 'W', 'ц', 'Ц');
+    SetKey(18, 'e', 'E', 'у', 'У');  SetKey(19, 'r', 'R', 'к', 'К');
+    SetKey(20, 't', 'T', 'е', 'Е');  SetKey(21, 'y', 'Y', 'н', 'Н');
+    SetKey(22, 'u', 'U', 'г', 'Г');  SetKey(23, 'i', 'I', 'ш', 'Ш');
+    SetKey(24, 'o', 'O', 'щ', 'Щ');  SetKey(25, 'p', 'P', 'з', 'З');
+    SetKey(26, '[', '{', 'х', 'Х');  SetKey(27, ']', '}', 'ъ', 'Ъ');
+
+    // ASDF row
+    SetKey(30, 'a', 'A', 'ф', 'Ф');  SetKey(31, 's', 'S', 'ы', 'Ы');
+    SetKey(32, 'd', 'D', 'в', 'В');  SetKey(33, 'f', 'F', 'а', 'А');
+    SetKey(34, 'g', 'G', 'п', 'П');  SetKey(35, 'h', 'H', 'р', 'Р');
+    SetKey(36, 'j', 'J', 'о', 'О');  SetKey(37, 'k', 'K', 'л', 'Л');
+    SetKey(38, 'l', 'L', 'д', 'Д');  SetKey(39, ';', ':', 'ж', 'Ж');
+    SetKey(40, '''', '"', 'э', 'Э'); SetKey(41, '`', '~', 'ё', 'Ё');
+
+    SetKey(43, '\', '|', '\', '|');  // see comment above
+
+    // ZXCV row
+    SetKey(44, 'z', 'Z', 'я', 'Я');  SetKey(45, 'x', 'X', 'ч', 'Ч');
+    SetKey(46, 'c', 'C', 'с', 'С');  SetKey(47, 'v', 'V', 'м', 'М');
+    SetKey(48, 'b', 'B', 'и', 'И');  SetKey(49, 'n', 'N', 'т', 'Т');
+    SetKey(50, 'm', 'M', 'ь', 'Ь');  SetKey(51, ',', '<', 'б', 'Б');
+    SetKey(52, '.', '>', 'ю', 'Ю');  SetKey(53, '/', '?', '.', ',');
+  end;
+
+  function LoadHunspell(): boolean;
+  var
+    i: integer;
+  begin
+    Result := False;
+    HunspellLib := NilHandle;
+    for i := 0 to High(HUNSPELL_CANDIDATES) do
+    begin
+      HunspellLib := LoadLibrary(HUNSPELL_CANDIDATES[i]);
+      if HunspellLib <> NilHandle then break;
+    end;
+    if HunspellLib = NilHandle then
+    begin
+      Log(etError, 'auto-mode: cannot load libhunspell, is it installed?', False);
+      Exit;
+    end;
+
+    Pointer(Hunspell_create) := GetProcedureAddress(HunspellLib, 'Hunspell_create');
+    Pointer(Hunspell_destroy) := GetProcedureAddress(HunspellLib, 'Hunspell_destroy');
+    Pointer(Hunspell_spell) := GetProcedureAddress(HunspellLib, 'Hunspell_spell');
+    if (not Assigned(Hunspell_create)) or (not Assigned(Hunspell_destroy)) or
+      (not Assigned(Hunspell_spell)) then
+    begin
+      Log(etError, 'auto-mode: cannot resolve Hunspell symbols.', False);
+      Exit;
+    end;
+
+    EnDictHandle := Hunspell_create(PChar(DictEnAff), PChar(DictEnDic));
+    RuDictHandle := Hunspell_create(PChar(DictRuAff), PChar(DictRuDic));
+    if (EnDictHandle = nil) or (RuDictHandle = nil) then
+    begin
+      Log(etError, 'auto-mode: cannot open dictionary files, check paths in config.', False);
+      Exit;
+    end;
+
+    Result := True;
+  end;
+
+  procedure UnloadHunspell();
+  begin
+    if Assigned(Hunspell_destroy) then
+    begin
+      if EnDictHandle <> nil then Hunspell_destroy(EnDictHandle);
+      if RuDictHandle <> nil then Hunspell_destroy(RuDictHandle);
+    end;
+    if HunspellLib <> NilHandle then
+      FreeLibrary(HunspellLib);
+  end;
+
+  function IsRealWord(handle: Pointer; const word: UTF8String): boolean;
+  begin
+    Result := (handle <> nil) and (Hunspell_spell(handle, PChar(word)) <> 0);
+  end;
+
+  // Resolves a username to a numeric UID via the `id` tool, once, at
+  // startup. Not done with the pwd/users fpc package on purpose - that
+  // package isn't guaranteed to ship with every distro's plain `fpc`
+  // install, whereas `id` is coreutils and always there.
+  function ResolveUserUid(const Username: string): string;
+  var
+    P: TProcess;
+    Output: TStringList;
+  begin
+    Result := '';
+    if Trim(Username) = '' then Exit;
+    P := TProcess.Create(nil);
+    try
+      P.Executable := 'id';
+      P.Parameters.Add('-u');
+      P.Parameters.Add(Username);
+      P.Options := [poUsePipes];
+      try
+        P.Execute;
+      except
+        Exit;
+      end;
+      P.WaitOnExit;
+      if P.ExitStatus <> 0 then Exit;
+      Output := TStringList.Create;
+      try
+        Output.LoadFromStream(P.Output);
+        if Output.Count > 0 then Result := Trim(Output[0]);
+      finally
+        Output.Free;
+      end;
+    finally
+      P.Free;
+    end;
+  end;
+
+  // Asks kdotool (or whatever ActiveWindowTool points at) for the focused
+  // window's resource class. Runs as a subprocess with a hard timeout, so a
+  // hung KWin/DBus round-trip can never freeze the keyboard-reading loop -
+  // if it doesn't answer in time we kill it and report failure.
+  //
+  // This daemon runs as root (upstream's own systemd unit has no User=,
+  // just a commented-out suggestion) but kdotool needs to reach KWin over
+  // the *session* DBus bus of whoever is actually logged in graphically -
+  // a bus root has no address for and, even knowing the address, no
+  // standing invitation to join. So when active-window-user/ActiveWindowUid
+  // is configured, the call is wrapped through `runuser` into that user's
+  // context with the session bus env vars set explicitly; without it, the
+  // tool is invoked directly, which only works if this daemon itself is
+  // somehow already running as that user (not upstream's default setup,
+  // but a valid one if you've rebuilt the service as a --user unit).
+  function GetActiveWindowClass(TimeoutMs: integer): string;
+  var
+    P: TProcess;
+    Output: TStringList;
+    Waited: integer;
+    EnvXdg, EnvBus: string;
+  begin
+    Result := '';
+    P := TProcess.Create(nil);
+    try
+      if ActiveWindowUid <> '' then
+      begin
+        EnvXdg := Format('XDG_RUNTIME_DIR=/run/user/%s', [ActiveWindowUid]);
+        EnvBus := Format('DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/%s/bus', [ActiveWindowUid]);
+        P.Executable := 'runuser';
+        P.Parameters.Add('-u'); P.Parameters.Add(ActiveWindowUser);
+        P.Parameters.Add('--');
+        P.Parameters.Add('env'); P.Parameters.Add(EnvXdg); P.Parameters.Add(EnvBus);
+        P.Parameters.Add(ActiveWindowTool);
+        P.Parameters.Add('getactivewindow');
+        P.Parameters.Add('getwindowclassname');
+      end
+      else
+      begin
+        P.Executable := ActiveWindowTool;
+        P.Parameters.Add('getactivewindow');
+        P.Parameters.Add('getwindowclassname');
+      end;
+      P.Options := [poUsePipes];
+      try
+        P.Execute;
+      except
+        on E: Exception do
+        begin
+          Log(etError, Format('auto-mode: cannot run %s (%s)', [P.Executable, E.Message]), False);
+          Exit;
+        end;
+      end;
+
+      Waited := 0;
+      while P.Running and (Waited < TimeoutMs) do
+      begin
+        Sleep(5);
+        Inc(Waited, 5);
+      end;
+
+      if P.Running then
+      begin
+        Log(etError, Format('auto-mode: %s timed out after %dms, killing it',
+          [ActiveWindowTool, TimeoutMs]), True);
+        P.Terminate(9);
+        Exit;   // fail closed: caller treats '' as "don't know"
+      end;
+
+      if P.ExitStatus <> 0 then Exit;
+
+      Output := TStringList.Create;
+      try
+        Output.LoadFromStream(P.Output);
+        if Output.Count > 0 then
+          Result := LowerCase(Trim(Output[0]));
+      finally
+        Output.Free;
+      end;
+    finally
+      P.Free;
+    end;
+  end;
+
+  // Same, but only actually shells out at most once per ActiveWindowCacheMs -
+  // keeps a burst of short words from spawning a process per word.
+  function GetActiveWindowClassCached(): string;
+  begin
+    if (MilliSecondsBetween(Now, LastActiveWindowCheck) >= ActiveWindowCacheMs) then
+    begin
+      LastActiveWindowClass := GetActiveWindowClass(ActiveWindowTimeoutMs);
+      LastActiveWindowCheck := Now;
+    end;
+    Result := LastActiveWindowClass;
+  end;
+
+  // ExcludeApps is a comma-separated list of substrings (app class names,
+  // lowercase); '' means the feature is off (no subprocess ever spawned).
+  // On any failure to determine the active window, we fail CLOSED - i.e.
+  // treat it as excluded, since the whole point of this check is safety.
+  function IsExcludedApp(): boolean;
+  var
+    ActiveClass, Part: string;
+    Parts: TStringArray;
+    i: integer;
+  begin
+    Result := False;
+    if Trim(ExcludeApps) = '' then Exit;
+
+    ActiveClass := GetActiveWindowClassCached();
+    if ActiveClass = '' then
+    begin
+      Result := True;   // couldn't tell -> play it safe
+      Exit;
+    end;
+
+    Parts := ExcludeApps.Split(',');
+    for i := 0 to High(Parts) do
+    begin
+      Part := LowerCase(Trim(Parts[i]));
+      if (Part <> '') and (Pos(Part, ActiveClass) > 0) then
+      begin
+        Result := True;
+        Exit;
+      end;
+    end;
+  end;
+
+  // Decodes the word currently sitting at the end of KeyBuf (i.e. right
+  // before the SPACE-up event that just triggered this check) into two
+  // parallel strings: "what it would read as if EN was active" and
+  // "...if RU was active". Purely a peek - never mutates KeyBuf.
+  // Backspaces are resolved inline, so mid-word typos the user already
+  // fixed don't pollute the result.
+  procedure DecodeLastWord(out EnWord, RuWord: UTF8String; out EnChars, RuChars: TCharArray;
+    out RawKeyCount: integer);
+  var
+    i, s: integer;
+    ShiftActive: boolean;
+  begin
+    SetLength(EnChars, 0);
+    SetLength(RuChars, 0);
+    ShiftActive := False;
+
+    // same cutoff search Convert() uses: most recent SPACE-up, excluding
+    // the very last buffer element (that's the trailing space itself)
+    s := 0;
+    for i := 0 to Length(KeyBuf) - 1 do
+      if (KeyBuf[i].value = 0) and (KeyBuf[i].code = KEY_SPACE) and (i <> Length(KeyBuf) - 1) then
+        s := i + 1;
+
+    for i := s to Length(KeyBuf) - 1 do
+    begin
+      if KeyBuf[i].code in Shifts then
+      begin
+        ShiftActive := (KeyBuf[i].value = 1);
+        Continue;
+      end;
+
+      if (KeyBuf[i].code = KEY_BACKSPACE) and (KeyBuf[i].value = 1) then
+      begin
+        if Length(EnChars) > 0 then SetLength(EnChars, Length(EnChars) - 1);
+        if Length(RuChars) > 0 then SetLength(RuChars, Length(RuChars) - 1);
+        Continue;
+      end;
+
+      if (KeyBuf[i].value = 1) and (KeyBuf[i].code in Letters) and (KeyBuf[i].code <> KEY_SPACE) then
+      begin
+        SetLength(EnChars, Length(EnChars) + 1);
+        SetLength(RuChars, Length(RuChars) + 1);
+        if ShiftActive then
+        begin
+          EnChars[High(EnChars)] := EnCharShift[KeyBuf[i].code];
+          RuChars[High(RuChars)] := RuCharShift[KeyBuf[i].code];
+        end
+        else
+        begin
+          EnChars[High(EnChars)] := EnChar[KeyBuf[i].code];
+          RuChars[High(RuChars)] := RuChar[KeyBuf[i].code];
+        end;
+      end;
+    end;
+
+    EnWord := '';
+    for i := 0 to High(EnChars) do EnWord := EnWord + EnChars[i];
+    RuWord := '';
+    for i := 0 to High(RuChars) do RuWord := RuWord + RuChars[i];
+    RawKeyCount := Length(EnChars);
+  end;
+
+  // Splits a hunspell .dic word list into individual lowercase words,
+  // stripping the trailing "/AFFIXFLAGS" hunspell uses. Same file the
+  // Hunspell handle already loaded - just read a second time as plain text,
+  // no need for anything spell-engine-specific here.
+  function LoadWordListForBigrams(const Path: string): TStringList;
+  var
+    Lines: TStringList;
+    i, SlashPos: integer;
+    w: string;
+  begin
+    Result := TStringList.Create;
+    if not FileExists(Path) then Exit;
+    Lines := TStringList.Create;
+    try
+      Lines.LoadFromFile(Path);
+      for i := 1 to Lines.Count - 1 do   // line 0 is hunspell's word-count header
+      begin
+        w := Lines[i];
+        SlashPos := Pos('/', w);
+        if SlashPos > 0 then w := Copy(w, 1, SlashPos - 1);
+        w := Trim(w);
+        if w <> '' then Result.Add(LowerCase(w));
+      end;
+    finally
+      Lines.Free;
+    end;
+  end;
+
+  // Minimal UTF-8 character-boundary helpers - no LazUtf8 dependency (that's
+  // a Lazarus package, not part of a bare fpc install). Only needs to be
+  // correct for our alphabet: single-byte ASCII (^, $, a-z) and two-byte
+  // Cyrillic (U+0400 block) - so a 2/3/4-byte branch is enough, no need for
+  // full UTF-8 validation.
+  function MiniUTF8CharLen(const s: string; BytePos: integer): integer;
+  var
+    b: byte;
+  begin
+    b := Ord(s[BytePos]);
+    if b < $80 then Result := 1
+    else if (b and $E0) = $C0 then Result := 2
+    else if (b and $F0) = $E0 then Result := 3
+    else if (b and $F8) = $F0 then Result := 4
+    else Result := 1;  // malformed lead byte - advance by 1 rather than loop forever
+  end;
+
+  function MiniUTF8CharAt(const s: string; BytePos: integer): string;
+  begin
+    Result := Copy(s, BytePos, MiniUTF8CharLen(s, BytePos));
+  end;
+
+  // Builds letter-bigram counts (with ^/$ word-boundary markers, same idea
+  // as the Python prototype this was validated against) straight from a
+  // dictionary's word list. Not linguistically precise - it's frequency
+  // over the *word list*, not a real text corpus - but good enough to tell
+  // "typical for this language" from "not", which is all this needs.
+  function LoadBigramModel(const DicPath: string; out Counts: TBigramCounts;
+    out Total: Int64): boolean;
+  var
+    Words: TStringList;
+    w, ww: string;
+    i, p, clen: integer;
+    bg: UTF8String;
+    cur: Int64;
+  begin
+    Result := False;
+    Total := 0;
+    Counts := TBigramCounts.Create;
+    Words := LoadWordListForBigrams(DicPath);
+    try
+      if Words.Count = 0 then Exit;
+      for i := 0 to Words.Count - 1 do
+      begin
+        w := Words[i];
+        ww := '^' + w + '$';
+        // walk ww by logical (possibly multi-byte) character, not by byte
+        p := 1;
+        while p < Length(ww) do
+        begin
+          clen := MiniUTF8CharLen(ww, p);
+          bg := MiniUTF8CharAt(ww, p) + MiniUTF8CharAt(ww, p + clen);
+          if Counts.TryGetValue(bg, cur) then
+            Counts[bg] := cur + 1
+          else
+            Counts.Add(bg, 1);
+          Inc(Total);
+          Inc(p, clen);
+        end;
+      end;
+      Result := Total > 0;
+    finally
+      Words.Free;
+    end;
+  end;
+
+  // Normalized (per-bigram) log-probability of Chars under a bigram model,
+  // Laplace-smoothed so a bigram the model never saw doesn't zero the whole
+  // score out - it just costs a small, bounded penalty instead.
+  function BigramScore(const Chars: TCharArray; Counts: TBigramCounts;
+    Total: Int64; AlphabetSize: integer): double;
+  var
+    Padded: TCharArray;
+    i: integer;
+    bg: UTF8String;
+    cnt: Int64;
+    LogP: double;
+  begin
+    Result := -999;   // "impossible" sentinel for the degenerate empty case
+    if (Counts = nil) or (Total = 0) or (Length(Chars) = 0) then Exit;
+
+    SetLength(Padded, Length(Chars) + 2);
+    Padded[0] := '^';
+    for i := 0 to High(Chars) do Padded[i + 1] := Chars[i];
+    Padded[High(Padded)] := '$';
+
+    LogP := 0;
+    for i := 0 to High(Padded) - 1 do
+    begin
+      bg := Padded[i] + Padded[i + 1];
+      if not Counts.TryGetValue(bg, cnt) then cnt := 0;
+      LogP := LogP + ln((cnt + 1) / (Total + AlphabetSize));
+    end;
+    Result := LogP / (Length(Padded) - 1);
+  end;
+
+  // The actual decision: should the word that was just finished (ending
+  // right before this SPACE) be auto-corrected?
+  //
+  // Dictionary lookup decides first, same as before, and wins outright:
+  // a known word currently on screen is NEVER touched no matter what the
+  // statistics say, and a known word in the other reading is corrected
+  // exactly as before. Only when NEITHER reading is a real dictionary
+  // word do we fall back to letter-typicality (BigramScore) - this is
+  // what lets auto-mode react to things like "kubectl" or "gitignore"
+  // that no dictionary will ever contain: not by knowing the word, but by
+  // recognizing the *shape* of the language, the way upstream Punto
+  // Switcher's own "atypical letter sequence" detection does.
+  function ShouldAutoCorrect(): boolean;
+  var
+    EnWord, RuWord: UTF8String;
+    EnChars, RuChars: TCharArray;
+    RawKeyCount: integer;
+    CurrentOk, OtherOk: boolean;
+    CurrentScore, OtherScore: double;
+  begin
+    Result := False;
+    if not HunspellReady then Exit;
+    if IsExcludedApp() then Exit;
+
+    DecodeLastWord(EnWord, RuWord, EnChars, RuChars, RawKeyCount);
+    if RawKeyCount < MinWordLength then Exit;
+
+    if CurrentIsRu then
+    begin
+      CurrentOk := IsRealWord(RuDictHandle, RuWord);
+      OtherOk := IsRealWord(EnDictHandle, EnWord);
+    end
+    else
+    begin
+      CurrentOk := IsRealWord(EnDictHandle, EnWord);
+      OtherOk := IsRealWord(RuDictHandle, RuWord);
+    end;
+
+    if CurrentOk then Exit;              // known word on screen - never touch
+    if OtherOk then begin Result := True; Exit; end;  // known word the other way - correct, as before
+
+    // neither reading is a dictionary word - fall back to letter-typicality
+    if not BigramReady then Exit;
+    if CurrentIsRu then
+    begin
+      CurrentScore := BigramScore(RuChars, RuBigrams, RuBigramTotal, RU_BIGRAM_ALPHABET);
+      OtherScore := BigramScore(EnChars, EnBigrams, EnBigramTotal, EN_BIGRAM_ALPHABET);
+    end
+    else
+    begin
+      CurrentScore := BigramScore(EnChars, EnBigrams, EnBigramTotal, EN_BIGRAM_ALPHABET);
+      OtherScore := BigramScore(RuChars, RuBigrams, RuBigramTotal, RU_BIGRAM_ALPHABET);
+    end;
+
+    Result := (OtherScore - CurrentScore) > BigramThreshold;
+  end;
+
+  // ============================================================
+  // --- end of auto-correct addition ---
+  // ============================================================
 
   procedure RunInstall();
   var
@@ -911,6 +1511,30 @@ var
         ReverseMode := StrToBool(ConfigIniFile.ReadString('Easy Switcher', 'reverse-mode', 'False'));
         Delay := StrToInt(ConfigIniFile.ReadString('Easy Switcher', 'delay', '10'));
         SetLength(Keys_LS, SScanf(StrKeys_LS, '%d+%d', [@Keys_LS[0], @Keys_LS[1]]));
+
+        // --- auto-correct addition: extra config keys, all optional ---
+        Key_AUTOTOGGLE := StrToIntDef(ConfigIniFile.ReadString('Easy Switcher',
+          'auto-mode-key', IntToStr(DEFAULT_AUTOTOGGLE_KEY)), DEFAULT_AUTOTOGGLE_KEY);
+        AutoModeStart := StrToBool(ConfigIniFile.ReadString('Easy Switcher', 'auto-mode-start', 'False'));
+        MinWordLength := StrToIntDef(ConfigIniFile.ReadString('Easy Switcher',
+          'min-word-length', IntToStr(DEFAULT_MIN_WORD_LENGTH)), DEFAULT_MIN_WORD_LENGTH);
+        DictEnAff := ConfigIniFile.ReadString('Easy Switcher', 'dict-en-aff', DEFAULT_EN_AFF);
+        DictEnDic := ConfigIniFile.ReadString('Easy Switcher', 'dict-en-dic', DEFAULT_EN_DIC);
+        DictRuAff := ConfigIniFile.ReadString('Easy Switcher', 'dict-ru-aff', DEFAULT_RU_AFF);
+        DictRuDic := ConfigIniFile.ReadString('Easy Switcher', 'dict-ru-dic', DEFAULT_RU_DIC);
+        CurrentIsRu := (LowerCase(ConfigIniFile.ReadString('Easy Switcher', 'start-layout', 'en')) = 'ru');
+
+        // --- active-window addition ---
+        ExcludeApps := ConfigIniFile.ReadString('Easy Switcher', 'exclude-apps', '');
+        ActiveWindowTool := ConfigIniFile.ReadString('Easy Switcher', 'active-window-tool', DEFAULT_ACTIVE_WINDOW_TOOL);
+        ActiveWindowTimeoutMs := StrToIntDef(ConfigIniFile.ReadString('Easy Switcher',
+          'active-window-timeout-ms', IntToStr(DEFAULT_ACTIVE_WINDOW_TIMEOUT_MS)), DEFAULT_ACTIVE_WINDOW_TIMEOUT_MS);
+        ActiveWindowCacheMs := StrToIntDef(ConfigIniFile.ReadString('Easy Switcher',
+          'active-window-cache-ms', IntToStr(DEFAULT_ACTIVE_WINDOW_CACHE_MS)), DEFAULT_ACTIVE_WINDOW_CACHE_MS);
+        BigramThreshold := StrToFloatDef(ConfigIniFile.ReadString('Easy Switcher',
+          'bigram-threshold', FloatToStr(DEFAULT_BIGRAM_THRESHOLD)), DEFAULT_BIGRAM_THRESHOLD);
+        ActiveWindowUser := ConfigIniFile.ReadString('Easy Switcher', 'active-window-user', '');
+
         if Assigned(ConfigIniFile) then
           FreeAndNil(ConfigIniFile);
         if ((KeyboardPath = '~') or (MousePath = '~') or (Length(Keys_LS) = 0) or (KEY_RPL = 0)) then
@@ -934,6 +1558,46 @@ var
       Halt(1);
     end;
     Log(etInfo, 'Done.', True);
+
+    // --- auto-correct addition ---
+    InitCharTables();
+    HunspellReady := LoadHunspell();
+    if HunspellReady then
+      Log(etInfo, Format('auto-mode: dictionaries loaded, toggle key is %s.',
+        [KeyName[Key_AUTOTOGGLE]]), False)
+    else
+      Log(etError, 'auto-mode: unavailable this session (see error above). ' +
+        'Manual correction still works normally.', False);
+    AutoModeActive := AutoModeStart and HunspellReady;
+    Log(etInfo, Format('auto-mode: starting %s.', [BoolToStr(AutoModeActive, 'ON', 'OFF')]), False);
+
+    BigramReady := LoadBigramModel(DictEnDic, EnBigrams, EnBigramTotal) and
+      LoadBigramModel(DictRuDic, RuBigrams, RuBigramTotal);
+    if BigramReady then
+      Log(etInfo, Format('auto-mode: bigram fallback ready (%d/%d en/ru bigrams, threshold %.2f).',
+        [EnBigrams.Count, RuBigrams.Count, BigramThreshold]), False)
+    else
+      Log(etError, 'auto-mode: bigram fallback unavailable, dictionary-only detection still works.', False);
+
+    if Trim(ExcludeApps) <> '' then
+    begin
+      if Trim(ActiveWindowUser) = '' then
+        Log(etError, 'auto-mode: exclude-apps is set but active-window-user is not. ' +
+          'This daemon runs as root, so ' + ActiveWindowTool + ' almost certainly ' +
+          'cannot reach your session DBus bus this way - every check will fail closed, ' +
+          'meaning auto-mode will silently never correct anything. Set active-window-user ' +
+          'to your login username.', False)
+      else
+      begin
+        ActiveWindowUid := ResolveUserUid(ActiveWindowUser);
+        if ActiveWindowUid = '' then
+          Log(etError, Format('auto-mode: could not resolve uid for active-window-user=%s ' +
+            '- exclude-apps will fail closed on every check.', [ActiveWindowUser]), False)
+        else
+          Log(etInfo, Format('auto-mode: active-window checks will run as %s (uid %s) via runuser.',
+            [ActiveWindowUser, ActiveWindowUid]), False);
+      end;
+    end;
 
     //start keyboard reading
     Log(etInfo, 'Opening keyboard...', True);
@@ -996,6 +1660,30 @@ var
         begin
           Log(etInfo, Format('input %s %s', [KeyName[KeyIE.code], KeyAction[KeyIE.value]]), True);
           sleep(50);
+
+          // --- auto-correct addition: track real layout-switch presses so
+          // we know which decoded reading ("EN" vs "RU") is actually on
+          // screen right now. Mirrors Convert()'s own single-key/combo logic.
+          if (Length(Keys_LS) >= 1) and (KeyIE.code = Keys_LS[0]) then
+            LS0Down := (KeyIE.value = 1);
+          if (Length(Keys_LS) = 2) and (KeyIE.code = Keys_LS[1]) then
+            LS1Down := (KeyIE.value = 1);
+          if (KeyIE.value = 1) then
+          begin
+            if (Length(Keys_LS) = 1) and (KeyIE.code = Keys_LS[0]) then
+              CurrentIsRu := not CurrentIsRu
+            else if (Length(Keys_LS) = 2) and LS0Down and LS1Down and
+              ((KeyIE.code = Keys_LS[0]) or (KeyIE.code = Keys_LS[1])) then
+              CurrentIsRu := not CurrentIsRu;
+          end;
+
+          // --- auto-correct addition: toggle key, works regardless of buffer state ---
+          if HunspellReady and (KeyIE.code = Key_AUTOTOGGLE) and (KeyIE.value = 0) then
+          begin
+            AutoModeActive := not AutoModeActive;
+            Log(etInfo, Format('auto-mode: switched %s', [BoolToStr(AutoModeActive, 'ON', 'OFF')]), False);
+          end;
+
           if ((KeyIE.code in Letters) or (KeyIE.code in Shifts) or (KeyIE.code = KEY_RPL)) then
           begin
             i := Length(KeyBuf);
@@ -1013,6 +1701,21 @@ var
             NeedClearKeyBuf := False;
             Log(etInfo, 'buffer cleared', True);
           end;
+
+          // --- auto-correct addition: check the word just finished on SPACE-up ---
+          if AutoModeActive and (KeyIE.code = KEY_SPACE) and (KeyIE.value = 0) and (Length(KeyBuf) > 0) then
+          begin
+            if ShouldAutoCorrect() then
+            begin
+              Log(etInfo, 'auto-mode: wrong layout detected, correcting', False);
+              PrepareBuffer;
+              Convert(True);
+              CurrentIsRu := not CurrentIsRu;  // Convert() itself just switched layout
+              fpClose(KeyboardFD);
+              KeyboardFD := fpOpen(KeyboardPath, O_RDONLY or O_SYNC);
+            end;
+          end;
+
           if Length(KeyBuf) > 0 then
             if ((KeyIE.code = KEY_RPL) and (KeyIE.value = 0)) or
               ((KeyIE.code in Shifts) and (KeyIE.value = 0)) then
@@ -1028,11 +1731,13 @@ var
                 begin
                   Log(etInfo, 'convert all', True);
                   Convert(False);
+                  CurrentIsRu := not CurrentIsRu;  // auto-correct addition: Convert() itself just switched layout
                 end
                 else
                 begin
                   Log(etInfo, 'convert word', True);
                   Convert(True);
+                  CurrentIsRu := not CurrentIsRu;  // auto-correct addition
                 end;
                 fpClose(KeyboardFD);
                 KeyboardFD := fpOpen(KeyboardPath, O_RDONLY or O_SYNC);
@@ -1051,6 +1756,9 @@ var
       fpIOCtl(vKeyboardFD, UI_DEV_DESTROY, nil);
       fpClose(vKeyboardFD);
     end;
+    if HunspellReady then UnloadHunspell();  // auto-correct addition
+    FreeAndNil(EnBigrams);
+    FreeAndNil(RuBigrams);
   end;
 
   procedure RunDebug();
@@ -1115,6 +1823,28 @@ var
     Log(etInfo, '   -d,   --debug       run in a debug mode', True);
     Log(etInfo, '   -o,   --old-style   run as an "old-style" (not systemd) daemon', True);
     Log(etInfo, '   -h,   --help        show this help', True);
+    Log(etInfo, '', True);
+    Log(etInfo, 'Auto-mode (this fork''s addition, not in upstream): configure by', True);
+    Log(etInfo, 'hand in ' + CONFIG_FILE + ', keys are:', True);
+    Log(etInfo, '   auto-mode-start=true|false   (default false)', True);
+    Log(etInfo, '   auto-mode-key=<scancode>     (default 70, SCROLLLOCK)', True);
+    Log(etInfo, '   start-layout=en|ru           (default en, best-guess at daemon start)', True);
+    Log(etInfo, '   min-word-length=<n>          (default 4)', True);
+    Log(etInfo, '   dict-en-aff / dict-en-dic / dict-ru-aff / dict-ru-dic', True);
+    Log(etInfo, '     (default to /usr/share/hunspell/{en_US,ru_RU}.{aff,dic})', True);
+    Log(etInfo, '   exclude-apps=<comma-separated substrings>   (default empty = off)', True);
+    Log(etInfo, '     matched against the active window class via active-window-tool;', True);
+    Log(etInfo, '     e.g. "konsole,yakuake,code" to stay out of terminals/editors', True);
+    Log(etInfo, '   active-window-tool=<binary>       (default kdotool, KDE Wayland only)', True);
+    Log(etInfo, '   active-window-user=<username>     (REQUIRED for exclude-apps - this daemon', True);
+    Log(etInfo, '     runs as root, so reaching your session DBus bus for kdotool needs', True);
+    Log(etInfo, '     an explicit runuser hop into your login user)', True);
+    Log(etInfo, '   active-window-timeout-ms=<n>      (default 200)', True);
+    Log(etInfo, '   active-window-cache-ms=<n>        (default 400)', True);
+    Log(etInfo, '   bigram-threshold=<float>          (default 1.2)', True);
+    Log(etInfo, '     fallback for words in neither dictionary: how much more', True);
+    Log(etInfo, '     "typical" (letter-sequence-wise) the other reading has to', True);
+    Log(etInfo, '     look before correcting - lower = more aggressive', True);
   end;
 
 begin
